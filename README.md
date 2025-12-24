@@ -1,20 +1,47 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Minimalist Video Editor (FFmpeg.wasm)
 
-# Run and deploy your AI Studio app
+Client-side video previewer with a filmstrip timeline, built on React, FFmpeg.wasm, and Gemini for optional frame analysis.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/drive/1tOBtbPh6hwaGsXmkqqK_o6ceAg_Sr_oh
+- Import a local video and play it in the main preview.
+- Extract timeline thumbnails in-browser with FFmpeg.wasm.
+- Scrub the timeline with hover previews and a playhead.
+- Optional Gemini analysis: summary + highlights from sampled frames.
 
-## Run Locally
+## Architecture
 
-**Prerequisites:**  Node.js
+- UI: React + Vite, styled via Tailwind CDN.
+- Media: FFmpeg.wasm loads core assets from unpkg and extracts frames.
+- AI: @google/genai uploads 3 sampled frames (first/middle/last) for analysis.
 
+## Requirements
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- Node.js 18+ (or Bun) for local dev.
+- Modern browser with Web Worker support.
+- Network access to load FFmpeg core assets and Tailwind CDN.
+
+## Setup
+
+```bash
+npm install
+npm run dev
+```
+
+## Configuration
+
+- Gemini API key is read from `process.env.API_KEY` at build time.
+- If you use a different toolchain, ensure it injects `API_KEY` into the client bundle.
+
+## Notes / Limitations
+
+- Export is UI-only (no render pipeline implemented).
+- Frame extraction is capped (10-30 frames) to keep memory use low.
+- Some browsers or private modes may block FFmpeg Web Workers.
+
+## Project Structure
+
+- `App.tsx`: main UI and state orchestration.
+- `components/Timeline.tsx`: filmstrip timeline + scrubbing.
+- `services/ffmpegService.ts`: FFmpeg load + frame extraction.
+- `services/geminiService.ts`: Gemini analysis request.
