@@ -1,0 +1,8 @@
+{
+  "name": "Minimalist Video Editor (FFmpeg.wasm)",
+  "description": "A flat, black-and-white minimalist video previewer and frame timeline editor powered by FFmpeg.wasm and Gemini API for smart analysis.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
