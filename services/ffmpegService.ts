@@ -109,7 +109,8 @@ export const extractFrames = async (
     ]);
 
     const data = await ff.readFile(frameName);
-    const url = URL.createObjectURL(new Blob([data], { type: 'image/jpeg' }));
+    const blob = new Blob([data as any], { type: 'image/jpeg' });
+    const url = URL.createObjectURL(blob);
     
     frames.push({
       timestamp,
@@ -124,4 +125,45 @@ export const extractFrames = async (
 
   try { await ff.deleteFile(inputName); } catch(e) {}
   return frames;
+};
+
+export const trimVideo = async (
+  file: File,
+  start: number,
+  end: number
+): Promise<Blob | null> => {
+  const ff = await loadFFmpeg();
+  const inputName = 'trim_input.mp4';
+  const outputName = 'trim_output.mp4';
+  const safeStart = Math.max(0, Math.min(start, end));
+  const safeEnd = Math.max(start, end);
+  const duration = Math.max(0, safeEnd - safeStart);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+
+  try { await ff.deleteFile(inputName); } catch(e) {}
+  try { await ff.deleteFile(outputName); } catch(e) {}
+
+  await ff.writeFile(inputName, await fetchFile(file));
+
+  await ff.exec([
+    '-i', inputName,
+    '-ss', `${safeStart}`,
+    '-t', `${duration}`,
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '23',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-movflags', '+faststart',
+    outputName
+  ]);
+
+  const data = await ff.readFile(outputName);
+  const blob = new Blob([data as any], { type: 'video/mp4' });
+
+  try { await ff.deleteFile(inputName); } catch(e) {}
+  try { await ff.deleteFile(outputName); } catch(e) {}
+
+  return blob;
 };

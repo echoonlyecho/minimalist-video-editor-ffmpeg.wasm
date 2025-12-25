@@ -1,18 +1,34 @@
 
 import React, { useRef, useState } from 'react';
-import { FrameThumbnail } from '../types';
+import { FrameThumbnail, TimeRange } from '../types';
 
 interface TimelineProps {
   duration: number;
   currentTime: number;
   frames: FrameThumbnail[];
   onSeek: (time: number) => void;
+  trimRange: TimeRange | null;
+  onTrimRangeChange: (range: TimeRange) => void;
 }
 
-const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, frames, onSeek }) => {
+type TrimDragMode = 'move' | 'start' | 'end';
+
+const Timeline: React.FC<TimelineProps> = ({
+  duration,
+  currentTime,
+  frames,
+  onSeek,
+  trimRange,
+  onTrimRangeChange
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hoverInfo, setHoverInfo] = useState<{ x: number; time: number; url: string | null } | null>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
+  const [trimDrag, setTrimDrag] = useState<{
+    mode: TrimDragMode;
+    startX: number;
+    startRange: TimeRange;
+  } | null>(null);
 
   const findFrame = (time: number) => {
     if (frames.length === 0) return null;
@@ -20,6 +36,8 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, frames, onSe
       Math.abs(curr.timestamp - time) < Math.abs(prev.timestamp - time) ? curr : prev
     );
   };
+
+  const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
   const getPosition = (clientX: number) => {
     if (!containerRef.current || duration === 0) return null;
@@ -44,6 +62,15 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, frames, onSe
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!containerRef.current || duration === 0) return;
+    const target = e.target as HTMLElement;
+    const role = target.dataset.role;
+    if (trimRange && (role === 'trim-range' || role === 'trim-handle-start' || role === 'trim-handle-end')) {
+      const mode: TrimDragMode =
+        role === 'trim-range' ? 'move' : role === 'trim-handle-start' ? 'start' : 'end';
+      containerRef.current.setPointerCapture(e.pointerId);
+      setTrimDrag({ mode, startX: e.clientX, startRange: trimRange });
+      return;
+    }
     containerRef.current.setPointerCapture(e.pointerId);
     setIsScrubbing(true);
     scrubTo(e.clientX);
@@ -52,6 +79,33 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, frames, onSe
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!containerRef.current || duration === 0) return;
+    if (trimDrag) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const minDuration = Math.min(0.5, duration);
+      const rangeDuration = trimDrag.startRange.end - trimDrag.startRange.start;
+      const deltaTime = ((e.clientX - trimDrag.startX) / rect.width) * duration;
+      let nextStart = trimDrag.startRange.start;
+      let nextEnd = trimDrag.startRange.end;
+
+      if (trimDrag.mode === 'move') {
+        const maxStart = Math.max(0, duration - rangeDuration);
+        nextStart = clamp(trimDrag.startRange.start + deltaTime, 0, maxStart);
+        nextEnd = nextStart + rangeDuration;
+      } else {
+        const pos = getPosition(e.clientX);
+        if (!pos) return;
+        if (trimDrag.mode === 'start') {
+          nextStart = clamp(pos.time, 0, trimDrag.startRange.end - minDuration);
+          nextEnd = trimDrag.startRange.end;
+        } else {
+          nextStart = trimDrag.startRange.start;
+          nextEnd = clamp(pos.time, trimDrag.startRange.start + minDuration, duration);
+        }
+      }
+
+      onTrimRangeChange({ start: nextStart, end: nextEnd });
+      return;
+    }
     if (e.pointerType === 'mouse') updateHover(e.clientX);
     if (isScrubbing) scrubTo(e.clientX);
   };
@@ -60,6 +114,7 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, frames, onSe
     if (containerRef.current?.hasPointerCapture(e.pointerId)) {
       containerRef.current.releasePointerCapture(e.pointerId);
     }
+    setTrimDrag(null);
     setIsScrubbing(false);
   };
 
@@ -69,9 +124,14 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, frames, onSe
     }
     setIsScrubbing(false);
     setHoverInfo(null);
+    setTrimDrag(null);
   };
 
   const playheadPosition = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const showTrim = !!trimRange && duration > 0;
+  const trimStart = showTrim ? (trimRange!.start / duration) * 100 : 0;
+  const trimEnd = showTrim ? (trimRange!.end / duration) * 100 : 0;
+  const trimWidth = Math.max(0, trimEnd - trimStart);
 
   return (
     <div className="w-full bg-[#050505] border-t border-[#1a1a1a] p-5 flex flex-col gap-3 select-none h-full">
@@ -119,6 +179,24 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, frames, onSe
             </div>
           )}
         </div>
+
+        {/* Trim Range */}
+        {showTrim && trimWidth > 0 && (
+          <div
+            data-role="trim-range"
+            className={`absolute top-1 bottom-1 rounded-lg border-2 border-emerald-400/80 bg-emerald-400/10 shadow-[0_0_0_1px_rgba(16,185,129,0.35)] ${trimDrag?.mode === 'move' ? 'cursor-grabbing' : 'cursor-grab'} z-40`}
+            style={{ left: `${trimStart}%`, width: `${trimWidth}%` }}
+          >
+            <div
+              data-role="trim-handle-start"
+              className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-14 bg-emerald-400 rounded-sm shadow-md border border-black/40 cursor-ew-resize"
+            />
+            <div
+              data-role="trim-handle-end"
+              className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3 h-14 bg-emerald-400 rounded-sm shadow-md border border-black/40 cursor-ew-resize"
+            />
+          </div>
+        )}
 
         {/* Hover Frame Popup */}
         {hoverInfo && hoverInfo.url && (

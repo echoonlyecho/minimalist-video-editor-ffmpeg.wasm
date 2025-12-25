@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
-import { VideoState, GeminiAnalysis } from './types';
-import { loadFFmpeg, extractFrames } from './services/ffmpegService';
+import { VideoState, GeminiAnalysis, TimeRange } from './types';
+import { extractFrames, trimVideo } from './services/ffmpegService';
 import { analyzeVideoFrames } from './services/geminiService';
 import Timeline from './components/Timeline';
 import { 
@@ -24,8 +24,26 @@ const App: React.FC = () => {
   const [extractProgress, setExtractProgress] = useState(0);
   const [aiAnalysis, setAiAnalysis] = useState<GeminiAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [trimRange, setTrimRange] = useState<TimeRange | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const clampToRange = (time: number, range: TimeRange | null = trimRange) => {
+    if (!range) return time;
+    return Math.min(Math.max(time, range.start), range.end);
+  };
+
+  const updateTrimRange = (range: TimeRange) => {
+    const normalized = range.start <= range.end ? range : { start: range.end, end: range.start };
+    setTrimRange(normalized);
+    if (!videoRef.current) return;
+    const clamped = clampToRange(videoRef.current.currentTime, normalized);
+    if (clamped !== videoRef.current.currentTime) {
+      videoRef.current.currentTime = clamped;
+      setVideo(prev => ({ ...prev, currentTime: clamped }));
+    }
+  };
 
   const handleFile = (file: File) => {
     if (!file.type.startsWith('video/')) return;
@@ -39,6 +57,7 @@ const App: React.FC = () => {
     }));
     setAiAnalysis(null);
     setExtractProgress(0);
+    setTrimRange(null);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -49,6 +68,7 @@ const App: React.FC = () => {
   const onLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const duration = e.currentTarget.duration;
     setVideo(prev => ({ ...prev, duration }));
+    setTrimRange({ start: 0, end: duration });
     if (video.file) {
       processFrames(video.file, duration);
     }
@@ -69,20 +89,46 @@ const App: React.FC = () => {
 
   const handlePlayPause = () => {
     if (!videoRef.current) return;
-    if (video.isPlaying) videoRef.current.pause();
-    else videoRef.current.play();
-    setVideo(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
+    if (video.isPlaying) {
+      videoRef.current.pause();
+      setVideo(prev => ({ ...prev, isPlaying: false }));
+      return;
+    }
+    const rangeStart = trimRange?.start ?? 0;
+    const rangeEnd = trimRange?.end ?? video.duration;
+    const atEnd = Number.isFinite(rangeEnd) && videoRef.current.currentTime >= rangeEnd - 0.02;
+    const nextTime = clampToRange(atEnd ? rangeStart : videoRef.current.currentTime);
+    if (nextTime !== videoRef.current.currentTime) {
+      videoRef.current.currentTime = nextTime;
+    }
+    videoRef.current.play();
+    setVideo(prev => ({ ...prev, isPlaying: true, currentTime: nextTime }));
   };
 
   const handleSeek = (time: number) => {
     if (!videoRef.current) return;
-    videoRef.current.currentTime = time;
-    setVideo(prev => ({ ...prev, currentTime: time }));
+    const clamped = clampToRange(time);
+    videoRef.current.currentTime = clamped;
+    setVideo(prev => ({ ...prev, currentTime: clamped }));
   };
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
-    setVideo(prev => ({ ...prev, currentTime: videoRef.current!.currentTime }));
+    const current = videoRef.current.currentTime;
+    if (trimRange) {
+      if (current < trimRange.start) {
+        videoRef.current.currentTime = trimRange.start;
+        setVideo(prev => ({ ...prev, currentTime: trimRange.start }));
+        return;
+      }
+      if (current > trimRange.end) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = trimRange.end;
+        setVideo(prev => ({ ...prev, currentTime: trimRange.end, isPlaying: false }));
+        return;
+      }
+    }
+    setVideo(prev => ({ ...prev, currentTime: current }));
   };
 
   const handleAnalyze = async () => {
@@ -99,6 +145,35 @@ const App: React.FC = () => {
     }
   };
 
+  const handleExport = async () => {
+    if (!video.file || !trimRange) return;
+    const safeStart = Math.max(0, Math.min(trimRange.start, trimRange.end));
+    const safeEnd = Math.max(trimRange.start, trimRange.end);
+    if (safeEnd <= safeStart) return;
+    setIsExporting(true);
+    try {
+      const blob = await trimVideo(video.file, safeStart, safeEnd);
+      if (!blob) {
+        alert("Trim range is empty.");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const baseName = video.file.name.replace(/\.[^/.]+$/, '') || 'trimmed';
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${baseName}_trim.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert("Export failed. Please try again.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const reset = () => {
     if (video.url) URL.revokeObjectURL(video.url);
     video.frames.forEach(f => URL.revokeObjectURL(f.url));
@@ -108,7 +183,11 @@ const App: React.FC = () => {
     });
     setAiAnalysis(null);
     setExtractProgress(0);
+    setTrimRange(null);
+    setIsExporting(false);
   };
+
+  const canExport = !!video.file && !!trimRange && trimRange.end > trimRange.start && !video.isProcessing;
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#000] text-white overflow-hidden font-sans">
@@ -124,8 +203,12 @@ const App: React.FC = () => {
             <UploadIcon /> Import
           </button>
           <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="video/*" className="hidden" />
-          <button disabled={!video.url} className="text-[10px] font-bold uppercase tracking-widest px-6 py-2 rounded-sm bg-white text-black hover:bg-gray-200 transition-all disabled:opacity-10 flex items-center gap-3">
-            <DownloadIcon /> Export
+          <button
+            onClick={handleExport}
+            disabled={!canExport || isExporting}
+            className="text-[10px] font-bold uppercase tracking-widest px-6 py-2 rounded-sm bg-white text-black hover:bg-gray-200 transition-all disabled:opacity-10 flex items-center gap-3"
+          >
+            <DownloadIcon /> {isExporting ? 'Exporting' : 'Export'}
           </button>
         </div>
       </header>
@@ -232,6 +315,8 @@ const App: React.FC = () => {
         <Timeline 
           duration={video.duration} currentTime={video.currentTime} 
           frames={video.frames} onSeek={handleSeek}
+          trimRange={trimRange}
+          onTrimRangeChange={updateTrimRange}
         />
       </footer>
     </div>

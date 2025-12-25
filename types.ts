@@ -18,3 +18,8 @@ export interface GeminiAnalysis {
   summary: string;
   highlights: string[];
 }
+
+export interface TimeRange {
+  start: number;
+  end: number;
+}
