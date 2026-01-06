@@ -1,7 +1,7 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { VideoState, GeminiAnalysis, TimeRange } from './types';
-import { trimVideo } from './services/ffmpegService';
+import { loadFFmpeg, trimVideo } from './services/ffmpegService';
 import { extractTimelineFrames } from './services/frameExtractService';
 import { analyzeVideoFrames } from './services/geminiService';
 import Timeline from './components/Timeline';
@@ -59,6 +59,12 @@ const App: React.FC = () => {
   const [trimRange, setTrimRange] = useState<TimeRange | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    loadFFmpeg().catch((err) => {
+      console.warn('FFmpeg preload failed (will retry on demand):', err);
+    });
+  }, []);
 
   const clampToRange = (time: number, range: TimeRange | null = trimRange) => {
     if (!range) return time;
@@ -123,7 +129,13 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePlayPause = () => {
+  const waitForSeeked = (el: HTMLVideoElement) =>
+    new Promise<void>((resolve) => {
+      if (!el.seeking) return resolve();
+      el.addEventListener('seeked', () => resolve(), { once: true });
+    });
+
+  const handlePlayPause = async () => {
     if (!videoRef.current) return;
     if (video.isPlaying) {
       videoRef.current.pause();
@@ -135,16 +147,30 @@ const App: React.FC = () => {
     const atEnd = Number.isFinite(rangeEnd) && videoRef.current.currentTime >= rangeEnd - 0.02;
     const nextTime = clampToRange(atEnd ? rangeStart : videoRef.current.currentTime);
     if (nextTime !== videoRef.current.currentTime) {
-      videoRef.current.currentTime = nextTime;
+      if (typeof (videoRef.current as any).fastSeek === 'function') {
+        (videoRef.current as any).fastSeek(nextTime);
+      } else {
+        videoRef.current.currentTime = nextTime;
+      }
     }
-    videoRef.current.play();
-    setVideo(prev => ({ ...prev, isPlaying: true, currentTime: nextTime }));
+    await waitForSeeked(videoRef.current);
+    try {
+      await videoRef.current.play();
+      setVideo(prev => ({ ...prev, isPlaying: true, currentTime: nextTime }));
+    } catch (err) {
+      console.error(err);
+      setVideo(prev => ({ ...prev, isPlaying: false }));
+    }
   };
 
   const handleSeek = (time: number) => {
     if (!videoRef.current) return;
     const clamped = clampToRange(time);
-    videoRef.current.currentTime = clamped;
+    if (typeof (videoRef.current as any).fastSeek === 'function') {
+      (videoRef.current as any).fastSeek(clamped);
+    } else {
+      videoRef.current.currentTime = clamped;
+    }
     setVideo(prev => ({ ...prev, currentTime: clamped }));
   };
 
@@ -188,23 +214,28 @@ const App: React.FC = () => {
     if (safeEnd <= safeStart) return;
     setIsExporting(true);
     try {
-      const blob = await trimVideo(video.file, safeStart, safeEnd);
-      if (!blob) {
+      const result = await trimVideo(video.file, safeStart, safeEnd);
+      if (!result) {
         alert("Trim range is empty.");
         return;
       }
+      const { blob, ext } = result;
       const url = URL.createObjectURL(blob);
       const baseName = video.file.name.replace(/\.[^/.]+$/, '') || 'trimmed';
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${baseName}_trim.mp4`;
+      link.download = `${baseName}_trim.${ext}`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error(err);
-      alert("Export failed. Please try again.");
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "Export failed. Please try again.";
+      alert(message);
     } finally {
       setIsExporting(false);
     }
@@ -278,10 +309,15 @@ const App: React.FC = () => {
               <video 
                 ref={videoRef} src={video.url} 
                 className="w-full h-full max-w-full max-h-full object-contain rounded-lg shadow-2xl border border-white/5"
+                preload="auto"
                 playsInline
                 onLoadedMetadata={onLoadedMetadata} 
                 onTimeUpdate={handleTimeUpdate} 
                 onClick={handlePlayPause}
+                onPause={() => setVideo(prev => ({ ...prev, isPlaying: false }))}
+                onEnded={() => {
+                  setVideo(prev => ({ ...prev, isPlaying: false }));
+                }}
               />
               {video.isProcessing && (
                 <div className="absolute inset-0 bg-black backdrop-blur-3xl flex flex-col items-center justify-center z-[60]">

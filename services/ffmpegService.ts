@@ -235,9 +235,32 @@ export const trimVideo = async (
   file: File,
   start: number,
   end: number
-): Promise<Blob | null> => {
+): Promise<{ blob: Blob; ext: string; mime: string } | null> => {
   const ff = await loadFFmpeg();
-  const outputName = 'trim_output.mp4';
+  const inferOutput = () => {
+    const nameExt = (() => {
+      const m = file.name.match(/\.([^.]+)$/);
+      return m?.[1]?.toLowerCase() ?? '';
+    })();
+    const type = (file.type || '').toLowerCase();
+    const ext =
+      nameExt ||
+      (type.includes('webm') ? 'webm' : type.includes('quicktime') ? 'mov' : 'mp4');
+
+    const mimeByExt: Record<string, string> = {
+      mp4: 'video/mp4',
+      m4v: 'video/mp4',
+      mov: 'video/quicktime',
+      webm: 'video/webm',
+      mkv: 'video/x-matroska',
+      avi: 'video/x-msvideo',
+    };
+
+    const mime = mimeByExt[ext] ?? (type.startsWith('video/') ? type : 'application/octet-stream');
+    return { ext, mime, outputName: `trim_output.${ext}` };
+  };
+
+  const { ext, mime, outputName } = inferOutput();
   const inputMount = '/input';
   const inputName = 'trim_input.mp4';
   const safeStart = Math.max(0, Math.min(start, end));
@@ -271,22 +294,35 @@ export const trimVideo = async (
   }
 
   try {
-    await ff.exec([
-      '-i', inputPath,
-      '-ss', `${safeStart}`,
-      '-t', `${duration}`,
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '23',
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-movflags', '+faststart',
-      outputName
-    ]);
+    const execCopy = async () => {
+      try {
+        await ff.deleteFile(outputName);
+      } catch {
+        ignore();
+      }
+      await ff.exec([
+        '-ss', `${safeStart}`,
+        '-t', `${duration}`,
+        '-i', inputPath,
+        '-map', '0:v:0',
+        '-map', '0:a?',
+        '-c', 'copy',
+        ...(ext === 'mp4' || ext === 'mov' || ext === 'm4v' ? ['-movflags', '+faststart'] : []),
+        outputName,
+      ]);
+    };
+
+    try {
+      await execCopy();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Export failed in no-reencode mode (stream copy). Source may require re-encoding. ${reason}`
+      );
+    }
 
     const data = await ff.readFile(outputName);
-    return new Blob([data as any], { type: 'video/mp4' });
+    return { blob: new Blob([data as any], { type: mime }), ext, mime };
   } finally {
     await cleanupInput();
     try {
