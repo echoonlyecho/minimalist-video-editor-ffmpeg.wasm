@@ -134,7 +134,7 @@ const Timeline: React.FC<TimelineProps> = ({
   const trimWidth = Math.max(0, trimEnd - trimStart);
 
   return (
-    <div className="w-full bg-[#050505] border-t border-[#1a1a1a] p-5 flex flex-col gap-3 select-none h-full">
+    <div className="w-full bg-[#050505] border-t border-[#1a1a1a] p-3 md:p-5 flex flex-col gap-2 md:gap-3 select-none h-full">
       <div className="flex justify-between items-end px-1">
         <div className="flex flex-col">
           <span className="text-[8px] text-gray-600 font-bold uppercase tracking-tighter">Timeline Status</span>
@@ -153,7 +153,7 @@ const Timeline: React.FC<TimelineProps> = ({
       
       <div 
         ref={containerRef}
-        className="relative h-24 bg-[#0a0a0a] rounded-xl border border-[#1a1a1a] overflow-visible cursor-ew-resize group shadow-2xl touch-none"
+        className="relative h-20 md:h-24 bg-[#0a0a0a] rounded-xl border border-[#1a1a1a] overflow-visible cursor-ew-resize group shadow-2xl touch-none"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}

@@ -1,7 +1,8 @@
 
 import React, { useState, useRef } from 'react';
 import { VideoState, GeminiAnalysis, TimeRange } from './types';
-import { extractFrames, trimVideo } from './services/ffmpegService';
+import { trimVideo } from './services/ffmpegService';
+import { extractTimelineFrames } from './services/frameExtractService';
 import { analyzeVideoFrames } from './services/geminiService';
 import Timeline from './components/Timeline';
 import { 
@@ -9,6 +10,36 @@ import {
   UploadIcon, ScissorsIcon, WandIcon, DownloadIcon, 
   InfoIcon, TrashIcon 
 } from './components/Icons';
+
+const describeProcessingError = (err: unknown) => {
+  const text =
+    typeof err === 'string'
+      ? err
+      : err instanceof Error
+        ? err.message
+        : (() => {
+            try {
+              return JSON.stringify(err);
+            } catch {
+              return String(err);
+            }
+          })();
+
+  const lower = text.toLowerCase();
+  if (lower.includes('out of memory') || lower.includes('oom') || lower.includes('allocation failed')) {
+    return `内存不足：这个视频的解码/抽帧超出浏览器可用内存。\n\n建议：关掉其它标签页/应用后重试，或先把视频转成更低分辨率/更低码率。`;
+  }
+  if (lower.includes('failed to import ffmpeg-core') || lower.includes('failed to fetch')) {
+    return `FFmpeg 核心加载失败（网络/CORS/缓存问题）。\n\n建议：用 Chrome 正常窗口、确保能访问 CDN，再重试。`;
+  }
+  if (lower.includes('ffmpeg is not loaded')) {
+    return `FFmpeg Worker 未就绪或已崩溃。\n\n建议：刷新页面重试；若持续出现，基本是浏览器/扩展阻止了 Worker。`;
+  }
+  if (lower.includes('no such file') || lower.includes('not found')) {
+    return `输入文件在 Worker 中不可用（WorkerFS 挂载失败或权限问题）。\n\n建议：用 Chrome 正常窗口重试。`;
+  }
+  return `视频处理失败：${text}`;
+};
 
 const App: React.FC = () => {
   const [video, setVideo] = useState<VideoState>({
@@ -67,23 +98,28 @@ const App: React.FC = () => {
 
   const onLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const duration = e.currentTarget.duration;
+    const videoWidth = e.currentTarget.videoWidth;
+    const videoHeight = e.currentTarget.videoHeight;
     setVideo(prev => ({ ...prev, duration }));
     setTrimRange({ start: 0, end: duration });
     if (video.file) {
-      processFrames(video.file, duration);
+      processFrames(video.file, duration, videoWidth, videoHeight);
     }
   };
 
-  const processFrames = async (file: File, duration: number) => {
+  const processFrames = async (file: File, duration: number, videoWidth?: number, videoHeight?: number) => {
     try {
-      const frames = await extractFrames(file, duration, (p) => {
-        setExtractProgress(Math.floor(p * 100));
-      });
+      const frames = await extractTimelineFrames(
+        file,
+        duration,
+        (p) => setExtractProgress(Math.floor(p * 100)),
+        { videoWidth, videoHeight }
+      );
       setVideo(prev => ({ ...prev, frames, isProcessing: false }));
     } catch (err) {
-      console.error("FFmpeg Startup Error:", err);
+      console.error("Video Processing Error:", err);
       setVideo(prev => ({ ...prev, isProcessing: false }));
-      alert("Video processing core failed to start. This usually means the browser blocked the WebWorker. Please try using Chrome in a normal window.");
+      alert(describeProcessingError(err));
     }
   };
 
@@ -214,7 +250,7 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 flex overflow-hidden">
-        <aside className="w-16 border-r border-white/5 flex flex-col items-center py-12 gap-10 bg-[#050505]">
+        <aside className="hidden md:flex w-16 border-r border-white/5 flex-col items-center py-12 gap-10 bg-[#050505]">
           <button className="text-gray-600 hover:text-white transition-all"><ScissorsIcon /></button>
           <button 
             onClick={handleAnalyze} 
@@ -226,7 +262,7 @@ const App: React.FC = () => {
           <button onClick={reset} className="mt-auto mb-4 text-gray-800 hover:text-red-500 transition-colors"><TrashIcon /></button>
         </aside>
 
-        <div className="flex-1 relative bg-[#080808] flex items-center justify-center p-12">
+        <div className="flex-1 relative bg-[#080808] flex items-center justify-center p-4 sm:p-8 md:p-12 min-w-0">
           {!video.url ? (
             <div onClick={() => fileInputRef.current?.click()} className="group cursor-pointer flex flex-col items-center gap-12 border border-white/5 bg-[#030303] p-32 rounded-[2rem] transition-all hover:bg-[#050505]">
               <div className="p-12 rounded-full bg-[#080808] border border-white/5 group-hover:scale-105 transition-transform">
@@ -238,16 +274,17 @@ const App: React.FC = () => {
               </div>
             </div>
           ) : (
-            <div className="relative group flex flex-col items-center w-full h-full justify-center">
+            <div className="relative group w-full h-full flex items-center justify-center">
               <video 
                 ref={videoRef} src={video.url} 
-                className="max-h-[60vh] max-w-[90%] rounded-lg shadow-2xl border border-white/5"
+                className="w-full h-full max-w-full max-h-full object-contain rounded-lg shadow-2xl border border-white/5"
+                playsInline
                 onLoadedMetadata={onLoadedMetadata} 
                 onTimeUpdate={handleTimeUpdate} 
                 onClick={handlePlayPause}
               />
               {video.isProcessing && (
-                <div className="absolute inset-0 bg-black/95 backdrop-blur-3xl flex flex-col items-center justify-center z-[60]">
+                <div className="absolute inset-0 bg-black backdrop-blur-3xl flex flex-col items-center justify-center z-[60]">
                   <div className="relative w-32 h-32 mb-10 flex items-center justify-center">
                     <svg className="absolute inset-0 w-full h-full transform -rotate-90">
                         <circle cx="64" cy="64" r="60" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/5" />
@@ -258,7 +295,7 @@ const App: React.FC = () => {
                   <span className="text-[9px] font-bold uppercase tracking-[1.5em] text-white/30">Decoding Streams</span>
                 </div>
               )}
-              <div className="mt-12 flex items-center gap-16 bg-black/40 backdrop-blur-2xl px-14 py-6 rounded-full border border-white/5 opacity-0 group-hover:opacity-100 transition-all">
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-10 bg-black/40 backdrop-blur-2xl px-10 py-4 rounded-full border border-white/5 opacity-0 group-hover:opacity-100 transition-all">
                 <button onClick={() => handleSeek(video.currentTime - 5)} className="text-gray-500 hover:text-white"><SkipBackIcon /></button>
                 <button onClick={handlePlayPause} className="w-14 h-14 bg-white text-black rounded-full flex items-center justify-center hover:scale-110 active:scale-95 shadow-xl transition-all">
                   {video.isPlaying ? <PauseIcon /> : <PlayIcon />}
@@ -269,7 +306,7 @@ const App: React.FC = () => {
           )}
         </div>
 
-        <aside className="w-80 border-l border-white/5 bg-[#050505] p-8 flex flex-col gap-10 overflow-y-auto">
+        <aside className="hidden lg:flex w-80 border-l border-white/5 bg-[#050505] p-8 flex-col gap-10 overflow-y-auto">
           <div className="flex items-center justify-between opacity-20">
             <span className="text-[10px] font-black uppercase tracking-widest">Metadata inspector</span>
             <InfoIcon />
@@ -311,7 +348,7 @@ const App: React.FC = () => {
         </aside>
       </main>
 
-      <footer className="h-44 bg-[#050505]">
+      <footer className="h-32 md:h-44 bg-[#050505]">
         <Timeline 
           duration={video.duration} currentTime={video.currentTime} 
           frames={video.frames} onSeek={handleSeek}
